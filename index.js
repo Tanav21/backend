@@ -1,28 +1,44 @@
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
-const socketIo = require('socket.io');
+const { Server } = require('socket.io');
 const cors = require('cors');
 const connectDB = require('./config/database');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server, {
+
+const FRONTEND_URL =
+  process.env.FRONTEND_URL || 'http://localhost:5173';
+
+// ✅ CONNECT DB
+connectDB();
+
+// ✅ EXPRESS CORS (STRICT & CORRECT)
+app.use(
+  cors({
+    origin: FRONTEND_URL, // ❌ NO TRAILING SLASH
+    credentials: true,
+  })
+);
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// ✅ SOCKET.IO CORS (MATCHES EXPRESS)
+const io = new Server(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+    origin: FRONTEND_URL, // ❌ NO TRAILING SLASH
     methods: ['GET', 'POST'],
+    credentials: true,
   },
 });
 
-const PORT = process.env.PORT || 5000;
-
-// Connect to MongoDB
-connectDB();
-
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// ✅ FIX SOCKET.IO POLLING HEADERS (IMPORTANT)
+io.engine.on('headers', (headers) => {
+  headers['Access-Control-Allow-Origin'] = FRONTEND_URL;
+  headers['Access-Control-Allow-Credentials'] = 'true';
+});
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
@@ -36,119 +52,73 @@ app.get('/', (req, res) => {
   res.json({ message: 'Telehealth API Server is running' });
 });
 
-// Track room participants for initiator assignment
-const roomParticipants = new Map(); // roomId -> Set of socketIds
+// ================= SOCKET LOGIC =================
 
-// Socket.io for real-time chat and WebRTC signaling
+const roomParticipants = new Map();
+
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
   socket.on('join-room', (roomId) => {
     socket.join(roomId);
-    console.log(`[${roomId}] User ${socket.id} joined room`);
-    
-    // Get existing participants in the room
+
     const participants = roomParticipants.get(roomId) || new Set();
-    const existingParticipants = Array.from(participants);
-    
-    // Add current user to participants
+    const existing = Array.from(participants);
+
     participants.add(socket.id);
     roomParticipants.set(roomId, participants);
-    
-    // Determine initiator: first user in room becomes initiator for all subsequent connections
-    // For each existing participant, the new user will be the initiator
-    // For the new user, existing participants will initiate
-    existingParticipants.forEach((existingUserId) => {
-      // Existing user initiates connection to new user
-      io.to(existingUserId).emit('user-joined', { 
+
+    existing.forEach((existingUserId) => {
+      io.to(existingUserId).emit('user-joined', {
         userId: socket.id,
-        isInitiator: true // Existing user should initiate
+        isInitiator: true,
       });
-      
-      // New user receives connection from existing user (not initiator)
-      socket.emit('user-joined', { 
+
+      socket.emit('user-joined', {
         userId: existingUserId,
-        isInitiator: false // New user should wait for offer
+        isInitiator: false,
       });
     });
-    
-    // If this is the first user, just acknowledge
-    if (existingParticipants.length === 0) {
+
+    if (existing.length === 0) {
       socket.emit('room-ready', { roomId });
     }
   });
 
   socket.on('leave-room', (roomId) => {
     socket.leave(roomId);
-    console.log(`[${roomId}] User ${socket.id} left room`);
-    
-    // Remove from participants
+
     const participants = roomParticipants.get(roomId);
     if (participants) {
       participants.delete(socket.id);
       if (participants.size === 0) {
         roomParticipants.delete(roomId);
-      } else {
-        roomParticipants.set(roomId, participants);
       }
     }
-    
+
     socket.to(roomId).emit('user-left', { userId: socket.id });
   });
 
-  // WebRTC signaling handlers
-  socket.on('webrtc-offer', (data) => {
-    const { roomId, offer, to } = data;
-    // Send offer to specific user if 'to' is provided, otherwise broadcast to room
-    if (to) {
-      io.to(to).emit('webrtc-offer', {
-        offer,
-        from: socket.id,
-      });
-    } else {
-      socket.to(roomId).emit('webrtc-offer', {
-        offer,
-        from: socket.id,
-      });
-    }
+  socket.on('webrtc-offer', ({ roomId, offer, to }) => {
+    if (to) io.to(to).emit('webrtc-offer', { offer, from: socket.id });
+    else socket.to(roomId).emit('webrtc-offer', { offer, from: socket.id });
   });
 
-  socket.on('webrtc-answer', (data) => {
-    const { roomId, answer, to } = data;
-    // Send answer to specific user if 'to' is provided, otherwise broadcast to room
-    if (to) {
-      io.to(to).emit('webrtc-answer', {
-        answer,
-        from: socket.id,
-      });
-    } else {
-      socket.to(roomId).emit('webrtc-answer', {
-        answer,
-        from: socket.id,
-      });
-    }
+  socket.on('webrtc-answer', ({ roomId, answer, to }) => {
+    if (to) io.to(to).emit('webrtc-answer', { answer, from: socket.id });
+    else socket.to(roomId).emit('webrtc-answer', { answer, from: socket.id });
   });
 
-  socket.on('webrtc-ice-candidate', (data) => {
-    const { roomId, candidate, to } = data;
-    // Send ICE candidate to specific user if 'to' is provided, otherwise broadcast to room
-    if (to) {
-      io.to(to).emit('webrtc-ice-candidate', {
-        candidate,
-        from: socket.id,
-      });
-    } else {
-      socket.to(roomId).emit('webrtc-ice-candidate', {
-        candidate,
-        from: socket.id,
-      });
-    }
+  socket.on('webrtc-ice-candidate', ({ roomId, candidate, to }) => {
+    if (to)
+      io.to(to).emit('webrtc-ice-candidate', { candidate, from: socket.id });
+    else
+      socket
+        .to(roomId)
+        .emit('webrtc-ice-candidate', { candidate, from: socket.id });
   });
 
-  socket.on('chat-message', async (data) => {
-    const { roomId, senderId, senderRole, message } = data;
-    
-    // Broadcast message to all users in the room
+  socket.on('chat-message', async ({ roomId, senderId, senderRole, message }) => {
     io.to(roomId).emit('chat-message', {
       senderId,
       senderRole,
@@ -156,7 +126,6 @@ io.on('connection', (socket) => {
       timestamp: new Date(),
     });
 
-    // Save message to database
     try {
       const Consultation = require('./models/Consultation');
       const consultation = await Consultation.findOne({ roomId });
@@ -169,27 +138,22 @@ io.on('connection', (socket) => {
         });
         await consultation.save();
       }
-    } catch (error) {
-      console.error('Error saving chat message:', error);
+    } catch (err) {
+      console.error('Chat save error:', err);
     }
   });
 
   socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-    
-    // Clean up from all rooms
     roomParticipants.forEach((participants, roomId) => {
       if (participants.has(socket.id)) {
         participants.delete(socket.id);
-        if (participants.size === 0) {
-          roomParticipants.delete(roomId);
-        }
         socket.to(roomId).emit('user-left', { userId: socket.id });
       }
     });
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () =>
+  console.log(`🚀 Server running on port ${PORT}`)
+);
