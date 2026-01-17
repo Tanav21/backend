@@ -27,8 +27,9 @@ router.post(
         return res.status(400).json({ errors: errors.array() });
       }
 
-      const { email, password, firstName, lastName, dateOfBirth, phone, address } = req.body;
-
+      const { email, password, firstName, lastName, dateOfBirth, phone, address, medicalHistory } = req.body;
+      const medical = medicalHistory.split(",");
+      console.log(medical)
       // Check if user already exists
       let user = await User.findOne({ email });
       if (user) {
@@ -51,6 +52,7 @@ router.post(
         dateOfBirth,
         phone,
         address: address || {},
+        medicalHistory: medical || [],
       });
       await patient.save();
 

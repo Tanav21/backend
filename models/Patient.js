@@ -25,28 +25,8 @@ const patientSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
-  address: {
-    street: String,
-    city: String,
-    state: String,
-    zipCode: String,
-    country: String,
-  },
-  emergencyContact: {
-    name: String,
-    relationship: String,
-    phone: String,
-  },
   medicalHistory: [{
-    condition: String,
-    diagnosisDate: Date,
-    notes: String,
-  }],
-  allergies: [String],
-  medications: [{
-    name: String,
-    dosage: String,
-    frequency: String,
+    type: String,
   }],
   createdAt: {
     type: Date,

@@ -36,6 +36,12 @@ const consultationSchema = new mongoose.Schema({
       enum: ['patient', 'doctor'],
       required: true,
     },
+     file: {
+      fileName: { type: String },
+      fileUrl: { type: String },
+      fileType: { type: String },
+      fileSize: { type: Number },
+    },
     message: String,
     timestamp: {
       type: Date,
