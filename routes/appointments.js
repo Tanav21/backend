@@ -7,7 +7,7 @@ const Patient = require('../models/Patient');
 const Doctor = require('../models/Doctor');
 const Consultation = require('../models/Consultation');
 const crypto = require('crypto');
-
+const APPOINTMENT_DURATION_MINUTES = 10;
 // @route   POST /api/appointments
 // @desc    Create a new appointment
 // @access  Private (Patient)
@@ -16,9 +16,11 @@ router.post(
   auth,
   requireRole('patient'),
   [
-    body('doctorId').notEmpty(),
-    body('specialty').notEmpty(),
-    body('appointmentDate').isISO8601(),
+    body('doctorId').notEmpty().withMessage('Doctor ID is required'),
+    body('specialty').notEmpty().withMessage('Specialty is required'),
+    body('appointmentDate')
+      .isISO8601()
+      .withMessage('Valid appointment date is required'),
   ],
   async (req, res) => {
     try {
@@ -29,39 +31,95 @@ router.post(
 
       const { doctorId, specialty, appointmentDate } = req.body;
 
-      // Verify doctor exists
+      /* --------------------------------------------------
+         1️⃣ VERIFY DOCTOR EXISTS (MUST BE FIRST)
+      -------------------------------------------------- */
       const doctor = await Doctor.findById(doctorId);
       if (!doctor) {
         return res.status(404).json({ message: 'Doctor not found' });
       }
 
-      // Get patient
+      /* --------------------------------------------------
+         2️⃣ PREVENT PAST APPOINTMENTS
+      -------------------------------------------------- */
+      const appointmentStart = new Date(appointmentDate);
+
+      if (appointmentStart <= new Date()) {
+        return res.status(400).json({
+          message: 'Cannot book an appointment in the past',
+        });
+      }
+
+      const appointmentEnd = new Date(
+        appointmentStart.getTime() +
+          APPOINTMENT_DURATION_MINUTES * 60 * 1000
+      );
+
+      /* --------------------------------------------------
+         3️⃣ CHECK FOR TIME CLASH
+      -------------------------------------------------- */
+      const existingAppointment = await Appointment.findOne({
+        doctorId: doctor._id,
+        appointmentDate: { $lt: appointmentEnd },
+        $expr: {
+          $gt: [
+            {
+              $add: [
+                '$appointmentDate',
+                APPOINTMENT_DURATION_MINUTES * 60 * 1000,
+              ],
+            },
+            appointmentStart,
+          ],
+        },
+      });
+
+      if (existingAppointment) {
+        return res.status(409).json({
+          message: 'Selected time slot is already booked',
+        });
+      }
+
+      /* --------------------------------------------------
+         4️⃣ VERIFY PATIENT
+      -------------------------------------------------- */
       const patient = await Patient.findOne({ userId: req.user.userId });
       if (!patient) {
         return res.status(404).json({ message: 'Patient profile not found' });
       }
 
-      // Create appointment
+      /* --------------------------------------------------
+         5️⃣ CREATE APPOINTMENT
+      -------------------------------------------------- */
       const appointment = new Appointment({
         patientId: patient._id,
         doctorId: doctor._id,
         specialty,
-        appointmentDate: new Date(appointmentDate),
+        appointmentDate: appointmentStart,
         amount: doctor.consultationFee,
       });
+
       await appointment.save();
 
-      // Create consultation room
+      /* --------------------------------------------------
+         6️⃣ CREATE CONSULTATION ROOM
+      -------------------------------------------------- */
       const roomId = crypto.randomBytes(16).toString('hex');
       const consultation = new Consultation({
         appointmentId: appointment._id,
         roomId,
       });
+
       await consultation.save();
 
-      // Populate appointment details
+      /* --------------------------------------------------
+         7️⃣ POPULATE & RESPONSE
+      -------------------------------------------------- */
       await appointment.populate('patientId', 'firstName lastName');
-      await appointment.populate('doctorId', 'firstName lastName specialization');
+      await appointment.populate(
+        'doctorId',
+        'firstName lastName specialization'
+      );
 
       res.status(201).json({
         appointment,
@@ -71,10 +129,14 @@ router.post(
       });
     } catch (error) {
       console.error(error);
-      res.status(500).json({ message: 'Server error', error: error.message });
+      res.status(500).json({
+        message: 'Server error',
+        error: error.message,
+      });
     }
   }
 );
+
 
 // @route   GET /api/appointments
 // @desc    Get appointments (filtered by role)

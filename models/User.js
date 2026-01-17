@@ -11,8 +11,15 @@ const userSchema = new mongoose.Schema({
   },
   password: {
     type: String,
-    required: true,
+    required: function() {
+      return !this.googleId; // Password required only if not Google user
+    },
     minlength: 6,
+  },
+  googleId: {
+    type: String,
+    sparse: true,
+    unique: true,
   },
   role: {
     type: String,
@@ -29,9 +36,11 @@ const userSchema = new mongoose.Schema({
   },
 });
 
-// Hash password before saving
+// Hash password before saving (only if password exists and is modified)
 userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next();
+  if (!this.isModified('password') || !this.password) return next();
+  // Skip hashing if it's already hashed (length > 60) or if user is Google-only
+  if (this.password.length > 60) return next();
   this.password = await bcrypt.hash(this.password, 10);
   next();
 });

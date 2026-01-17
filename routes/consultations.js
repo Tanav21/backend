@@ -105,27 +105,70 @@ router.post('/:roomId/end', auth, async (req, res) => {
 // @route   POST /api/consultations/:roomId/transcription
 // @desc    Add transcription entry
 // @access  Private
-router.post('/:roomId/transcription', auth, async (req, res) => {
+// router.post('/:roomId/transcription', auth, async (req, res) => {
+//   try {
+//     const { speaker, text } = req.body;
+//     const consultation = await Consultation.findOne({ roomId: req.params.roomId });
+
+//     if (!consultation) {
+//       return res.status(404).json({ message: 'Consultation not found' });
+//     }
+
+//     consultation.transcription.push({
+//       speaker,
+//       text,
+//       timestamp: new Date(),
+//     });
+//     await consultation.save();
+
+//     res.json({ message: 'Transcription added', consultation });
+//   } catch (error) {
+//     console.error(error);
+//     res.status(500).json({ message: 'Server error', error: error.message });
+//   }
+// });
+
+
+// @route   GET /api/consultations/appointment/:appointmentId
+// @desc    Get consultation by appointment ID
+// @access  Private
+router.get('/appointment/:appointmentId', auth, async (req, res) => {
   try {
-    const { speaker, text } = req.body;
-    const consultation = await Consultation.findOne({ roomId: req.params.roomId });
+    const consultation = await Consultation.findOne({
+      appointmentId: req.params.appointmentId,
+    });
 
     if (!consultation) {
       return res.status(404).json({ message: 'Consultation not found' });
     }
 
-    consultation.transcription.push({
-      speaker,
-      text,
-      timestamp: new Date(),
-    });
-    await consultation.save();
+    const appointment = await Appointment.findById(consultation.appointmentId);
+    if (!appointment) {
+      return res.status(404).json({ message: 'Appointment not found' });
+    }
 
-    res.json({ message: 'Transcription added', consultation });
+    // Authorization check
+    if (req.user.role === 'patient') {
+      const patient = await Patient.findOne({ userId: req.user.userId });
+      if (!patient || appointment.patientId.toString() !== patient._id.toString()) {
+        return res.status(403).json({ message: 'Unauthorized' });
+      }
+    } else if (req.user.role === 'doctor') {
+      const doctor = await Doctor.findOne({ userId: req.user.userId });
+      if (!doctor || appointment.doctorId.toString() !== doctor._id.toString()) {
+        return res.status(403).json({ message: 'Unauthorized' });
+      }
+    }
+
+    res.json({
+      consultation,
+      appointment,
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
+
 
 module.exports = router;

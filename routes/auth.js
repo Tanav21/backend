@@ -1,11 +1,15 @@
 const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
+const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/User');
 const Patient = require('../models/Patient');
 const Doctor = require('../models/Doctor');
 const generateToken = require('../utils/generateToken');
 const { auth } = require('../middleware/auth');
+
+// Initialize Google OAuth client
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // @route   POST /api/auth/register/patient
 // @desc    Register a new patient
@@ -224,6 +228,155 @@ router.post(
     }
   }
 );
+
+// @route   POST /api/auth/google
+// @desc    Authenticate user with Google OAuth
+// @access  Public
+router.post('/google', async (req, res) => {
+  try {
+    const { token, role } = req.body;
+
+    console.log('Google auth request received:', {
+      hasToken: !!token,
+      tokenType: typeof token,
+      tokenLength: token ? String(token).length : 0,
+      role,
+    });
+
+    if (!token) {
+      return res.status(400).json({ message: 'Google token is required' });
+    }
+
+    // Convert to string if it's not already
+    let tokenString = token;
+    if (typeof token !== 'string') {
+      console.warn('Token is not a string, converting:', typeof token);
+      tokenString = String(token);
+    }
+
+    // Validate token looks like a JWT (has 3 parts separated by dots)
+    if (!tokenString.includes('.') || tokenString.split('.').length !== 3) {
+      console.error('Invalid token format:', {
+        hasDots: tokenString.includes('.'),
+        parts: tokenString.split('.').length,
+        firstChars: tokenString.substring(0, 50),
+      });
+      return res.status(400).json({ 
+        message: 'Invalid token format. Expected a JWT ID token from Google Sign-In.',
+        hint: 'Make sure you are sending the credential (ID token) from Google Sign-In, not an access token.'
+      });
+    }
+
+    if (!role || !['patient', 'doctor'].includes(role)) {
+      return res.status(400).json({ message: 'Valid role (patient or doctor) is required' });
+    }
+
+    if (!process.env.GOOGLE_CLIENT_ID) {
+      return res.status(500).json({ message: 'Google OAuth is not configured on the server' });
+    }
+
+    // Verify Google token
+    let ticket;
+    try {
+      ticket = await client.verifyIdToken({
+        idToken: tokenString,
+        audience: process.env.GOOGLE_CLIENT_ID,
+      });
+    } catch (verifyError) {
+      console.error('Google token verification error:', verifyError);
+      return res.status(401).json({ 
+        message: 'Invalid or expired Google token',
+        error: verifyError.message 
+      });
+    }
+
+    const payload = ticket.getPayload();
+    const { sub: googleId, email, name, picture } = payload;
+
+    // Check if user exists by Google ID or email
+    let user = await User.findOne({
+      $or: [{ googleId }, { email }],
+    });
+
+    if (user) {
+      // Update user if they logged in with Google before but don't have googleId
+      if (!user.googleId && user.email === email) {
+        user.googleId = googleId;
+        await user.save();
+      }
+
+      // Check if role matches
+      if (user.role !== role) {
+        return res.status(400).json({ 
+          message: `This account is registered as a ${user.role}. Please select the correct role.` 
+        });
+      }
+    } else {
+      // Create new user
+      user = new User({
+        email,
+        googleId,
+        role,
+        password: `google_${googleId}_${Date.now()}`, // Placeholder password for Google users
+        isVerified: true, // Google accounts are pre-verified
+      });
+      await user.save();
+
+      // Create profile based on role
+      if (role === 'patient') {
+        const nameParts = name ? name.split(' ') : ['', ''];
+        const patient = new Patient({
+          userId: user._id,
+          firstName: nameParts[0] || 'User',
+          lastName: nameParts.slice(1).join(' ') || '',
+          phone: '',
+          address: {},
+          medicalHistory: [],
+        });
+        await patient.save();
+      } else if (role === 'doctor') {
+        const nameParts = name ? name.split(' ') : ['', ''];
+        const doctor = new Doctor({
+          userId: user._id,
+          firstName: nameParts[0] || 'Doctor',
+          lastName: nameParts.slice(1).join(' ') || '',
+          specialization: 'General',
+          licenseNumber: `GOOGLE_${googleId}`,
+          phone: '',
+          consultationFee: 0,
+          availability: {},
+        });
+        await doctor.save();
+      }
+    }
+
+    const token_jwt = generateToken(user._id);
+
+    // Get profile
+    let profile = null;
+    if (user.role === 'patient') {
+      profile = await Patient.findOne({ userId: user._id });
+    } else if (user.role === 'doctor') {
+      profile = await Doctor.findOne({ userId: user._id });
+    }
+
+    res.json({
+      token: token_jwt,
+      user: {
+        id: user._id,
+        email: user.email,
+        role: user.role,
+      },
+      profile,
+    });
+  } catch (error) {
+    console.error('Google OAuth error:', error);
+    res.status(500).json({ 
+      message: 'Google authentication failed', 
+      error: error.message 
+    });
+  }
+});
 
 // @route   GET /api/auth/me
 // @desc    Get current user

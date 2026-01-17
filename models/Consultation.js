@@ -21,11 +21,20 @@ const consultationSchema = new mongoose.Schema({
   duration: {
     type: Number, // in minutes
   },
-  transcription: [{
-    speaker: String, // 'patient' or 'doctor'
+  // transcription: [{
+  //   speaker: String, // 'patient' or 'doctor'
+  //   text: String,
+  //   timestamp: Date,
+  // }],
+  transcription: [
+  {
+    senderId: String,
+    senderRole: String,
     text: String,
     timestamp: Date,
-  }],
+  },
+],
+
   chatMessages: [{
     senderId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -52,6 +61,10 @@ const consultationSchema = new mongoose.Schema({
     type: String,
     enum: ['scheduled', 'active', 'ended'],
     default: 'scheduled',
+  },
+  aiReport: {
+    type: String,
+    default: null,
   },
   createdAt: {
     type: Date,
